@@ -1,0 +1,191 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers, regularizers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+class BrainTumorCNN:
+    def __init__(self, input_shape=(224, 224, 3), num_classes=4):
+        """Initialize the BrainTumorCNN class."""
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.model = None
+        self.history = None
+
+    def conv_block(self, filters, kernel_size=(3, 3), dropout_rate=0.25):
+        """Helper function to create a convolutional block."""
+        return [
+            layers.Conv2D(filters, kernel_size, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+            layers.BatchNormalization(),
+            layers.Conv2D(filters, kernel_size, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+            layers.MaxPooling2D((2, 2)),
+            layers.Dropout(dropout_rate)
+        ]
+
+    def build_model(self):
+        """Build the CNN architecture optimized for brain tumor classification."""
+        model = models.Sequential([
+            # Convolutional Blocks
+            *self.conv_block(32),
+            *self.conv_block(64),
+            *self.conv_block(128),
+            *self.conv_block(256),
+            
+            # Global Average Pooling
+            layers.GlobalAveragePooling2D(),
+            
+            # Dense Layers
+            layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+            layers.BatchNormalization(),
+            layers.Dropout(0.5),
+            
+            layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+            layers.BatchNormalization(),
+            layers.Dropout(0.5),
+            
+            # Output Layer
+            layers.Dense(self.num_classes, activation='softmax')
+        ])
+        
+        self.model = model
+        return model
+
+    def compile_model(self, learning_rate=0.001):
+        """Compile the model with appropriate optimizer and loss function."""
+        optimizer = optimizers.Adam(learning_rate=learning_rate)
+        self.model.compile(
+            optimizer=optimizer,
+            loss='categorical_crossentropy',
+            metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
+        )
+        return self.model
+
+    def create_data_generators(self, train_dir, test_dir, batch_size=32):
+        """Create data generators with appropriate augmentation."""
+        train_datagen = ImageDataGenerator(
+            rescale=1./255,
+            rotation_range=15,
+            width_shift_range=0.1,
+            height_shift_range=0.1,
+            horizontal_flip=True,
+            zoom_range=0.1,
+            brightness_range=[0.8, 1.2],
+            shear_range=0.2,
+            channel_shift_range=10,
+            validation_split=0.2
+        )
+        test_datagen = ImageDataGenerator(rescale=1./255)
+
+        train_generator = train_datagen.flow_from_directory(
+            train_dir,
+            target_size=self.input_shape[:2],
+            batch_size=batch_size,
+            class_mode='categorical',
+            subset='training'
+        )
+        validation_generator = train_datagen.flow_from_directory(
+            train_dir,
+            target_size=self.input_shape[:2],
+            batch_size=batch_size,
+            class_mode='categorical',
+            subset='validation'
+        )
+        test_generator = test_datagen.flow_from_directory(
+            test_dir,
+            target_size=self.input_shape[:2],
+            batch_size=batch_size,
+            class_mode='categorical',
+            shuffle=False
+        )
+        return train_generator, validation_generator, test_generator
+
+    def get_callbacks(self):
+        """Define callbacks for training."""
+        callbacks = [
+            EarlyStopping(monitor='val_accuracy', patience=10, restore_best_weights=True, verbose=1),
+            ReduceLROnPlateau(monitor='val_accuracy', factor=0.5, patience=5, min_lr=1e-7, verbose=1),
+            ModelCheckpoint('best_brain_tumor_model.keras', monitor='val_accuracy', save_best_only=True, verbose=1)
+        ]
+        return callbacks
+
+    def train(self, train_generator, validation_generator, epochs=50):
+        """Train the model."""
+        callbacks = self.get_callbacks()
+        self.history = self.model.fit(
+            train_generator,
+            epochs=epochs,
+            validation_data=validation_generator,
+            callbacks=callbacks,
+            verbose=1
+        )
+        return self.history
+
+    def plot_training_history(self):
+        """Plot training and validation metrics."""
+        if self.history is None:
+            print("No training history found.")
+            return
+        
+        plt.figure(figsize=(12, 5))
+        # Plot accuracy
+        plt.subplot(1, 2, 1)
+        plt.plot(self.history.history['accuracy'], label='Train Accuracy')
+        plt.plot(self.history.history['val_accuracy'], label='Validation Accuracy')
+        plt.title('Accuracy')
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        
+        # Plot loss
+        plt.subplot(1, 2, 2)
+        plt.plot(self.history.history['loss'], label='Train Loss')
+        plt.plot(self.history.history['val_loss'], label='Validation Loss')
+        plt.title('Loss')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+        
+        plt.show()
+
+    def evaluate(self, test_generator):
+        """Evaluate the model on the test set."""
+        predictions = self.model.predict(test_generator)
+        y_pred = np.argmax(predictions, axis=1)
+        y_true = test_generator.classes
+        
+        # Classification report
+        report = classification_report(y_true, y_pred, target_names=test_generator.class_indices.keys())
+        print("Classification Report:\n", report)
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_true, y_pred)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=test_generator.class_indices.keys(), yticklabels=test_generator.class_indices.keys())
+        plt.title('Confusion Matrix')
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.show()
+        
+        return predictions, report
+
+# Usage Example
+def main():
+    brain_tumor_cnn = BrainTumorCNN(input_shape=(224, 224, 3), num_classes=4)
+    model = brain_tumor_cnn.build_model()
+    brain_tumor_cnn.compile_model(learning_rate=0.001)
+    model.summary()
+    
+    train_dir = "/users/mmchann/downloads/DATASET/classification/Training"
+    test_dir = "/users/mmchann/downloads/DATASET/classification/Testing"
+    train_gen, val_gen, test_gen = brain_tumor_cnn.create_data_generators(train_dir, test_dir, batch_size=32)
+    
+    history = brain_tumor_cnn.train(train_gen, val_gen, epochs=50)
+    brain_tumor_cnn.plot_training_history()
+    predictions, report = brain_tumor_cnn.evaluate(test_gen)
+    return brain_tumor_cnn
+
+if __name__ == "__main__":
+    cnn_model = main()
